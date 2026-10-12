@@ -1,5 +1,4 @@
 name: Build Manager
-
 on:
   workflow_dispatch:
   push:
@@ -16,7 +15,6 @@ on:
       - 'scripts/ksubot.py'
   pull_request:
   workflow_call:
-
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -28,7 +26,7 @@ jobs:
       key_password: ${{ steps.gen.outputs.key_password }}
       spoofed_package_name: ${{ steps.pkg.outputs.spoofed_package_name }}
     steps:
-      - name: Generate temporary keystore
+      - name: Generate temporary keystore for PR
         if: github.event_name == 'pull_request'
         id: gen
         run: |
@@ -36,7 +34,6 @@ jobs:
           KEY_PASSWORD=$(openssl rand -hex 32)
           echo "keystore_password=$KEYSTORE_PASSWORD" >> $GITHUB_OUTPUT
           echo "key_password=$KEY_PASSWORD" >> $GITHUB_OUTPUT
-
           keytool -genkeypair \
             -alias pr-key \
             -keyalg RSA -keysize 2048 \
@@ -46,31 +43,32 @@ jobs:
             -dname "CN=KernelSU PR Build" \
             -storetype JKS \
             -keystore pr-key.jks
+          echo "keystore=$(base64 -w 0 pr-key.jks)" >> $GITHUB_OUTPUT
 
+      - name: Load self‑owned keystore for Release / Manual run
+        if: github.event_name != 'pull_request'
+        id: gen
+        run: |
+          echo '${{ secrets.MANAGER_KEYSTORE }}' | base64 -d > pr-key.jks
+          echo "keystore_password=${{ secrets.MANAGER_KEYSTORE_PASSWORD }}" >> $GITHUB_OUTPUT
+          echo "key_password=${{ secrets.MANAGER_KEY_PASSWORD }}" >> $GITHUB_OUTPUT
           echo "keystore=$(base64 -w 0 pr-key.jks)" >> $GITHUB_OUTPUT
 
       - name: Extract certificate hash and size
-        if: github.event_name == 'pull_request'
         id: extract
         env:
           STORE_PASS: ${{ steps.gen.outputs.keystore_password }}
         run: |
-          # Export DER certificate
           keytool -exportcert \
             -alias pr-key \
             -keystore pr-key.jks \
             -storepass "$STORE_PASS" \
             -file pr-cert.der
-
-          # Calculate size in hex
           SIZE_DEC=$(stat -c%s pr-cert.der)
           SIZE_HEX=$(printf '0x%04x' "$SIZE_DEC")
           echo "expected_size=$SIZE_HEX" >> $GITHUB_OUTPUT
-
-          # Calculate SHA256 hash
           HASH=$(sha256sum pr-cert.der | awk '{print $1}')
           echo "expected_hash=$HASH" >> $GITHUB_OUTPUT
-
           echo "Certificate size: $SIZE_HEX ($SIZE_DEC bytes)"
           echo "Certificate hash: $HASH"
 
@@ -119,7 +117,6 @@ jobs:
         include:
           - manager_type: "spoofed"
             build_type: "release"
-
           - manager_type: "normal"
             build_type: "release"
           - manager_type: "normal"
@@ -127,7 +124,6 @@ jobs:
     defaults:
       run:
         working-directory: ./manager
-
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -179,7 +175,7 @@ jobs:
             echo KEY_PASSWORD="$PR_KEY_PASSWORD"
             echo KEYSTORE_FILE='pr-key.jks'
           } >> gradle.properties
-      
+
       - name: Setup Java
         uses: actions/setup-java@v6
         with:
@@ -203,7 +199,6 @@ jobs:
             export KSU_NAME="BakaSU-DEV"
             export BUILD_EXTRA_ARGS="-PKSU_PACKAGE_NAME=$KSU_PACKAGE_NAME -PKSU_NAME=$KSU_NAME"
           fi
-
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             ./gradlew assemble${{ matrix.build_type }} -Pcommit=${{ steps.commit.outputs.COMMIT_SHA }} -PIS_PR_BUILD=true $BUILD_EXTRA_ARGS
           else
@@ -259,7 +254,7 @@ jobs:
         with:
             name: ${{ steps.determine.outputs.title }}-gradle-${{ matrix.build_type }}
             path: artifacts/${{ steps.determine.outputs.title }}-gradle-${{ matrix.build_type }}
-      
+
       - name: Download arm64 ksud
         uses: actions/download-artifact@v8
         with:
@@ -278,12 +273,11 @@ jobs:
           name: ksud-armv7-linux-androideabi
           path: artifacts/ksud-armv7-linux-androideabi
 
-      - name: Download RISC-V ksud
+      - name: Download RISC‑V ksud
         uses: actions/download-artifact@v8
         with:
           name: ksud-riscv64-linux-android
           path: artifacts/ksud-riscv64-linux-android
-
 
       - name: Place manager apk and ksud artifacts
         run: |
@@ -292,7 +286,6 @@ jobs:
           APKS=$(echo "$APKS" | tr '\n' ' ')
           test -n "$APKS"
           cp -f $APKS manager/app/build/outputs/apk/${{ matrix.build_type }}/
-
           mkdir -p target/aarch64-linux-android/release
           mkdir -p target/armv7-linux-androideabi/release
           mkdir -p target/x86_64-linux-android/release
@@ -354,7 +347,7 @@ jobs:
         uses: GeekyEggo/delete-artifact@v6
         with:
           name: ${{ steps.determine.outputs.title }}-gradle-${{ matrix.build_type }}
-        
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
@@ -390,7 +383,7 @@ jobs:
           cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=.. ..
           cmake --build . --target install -j$(nproc)
           cd ../..
-          ls -l telegram-bot-api/bin/telegram-bot-api*
+          ls -l telegram-bot-api/bin/telegram-bot-api
           cp telegram-bot-api/bin/telegram-bot-api telegram-bot-api-binary
       - name: Upload Binary
         uses: actions/upload-artifact@v7
@@ -418,7 +411,6 @@ jobs:
           else
             echo "UPLOAD=false" >> $GITHUB_OUTPUT
           fi
-
       - name: Determine manager variant
         id: determine
         run: |
@@ -429,23 +421,19 @@ jobs:
             echo "title=Manager" >> $GITHUB_OUTPUT
             echo "topicid=${{ vars.MESSAGE_THREAD_ID }}" >> $GITHUB_OUTPUT
           fi
-
           if [[ "${{ github.ref }}" != "refs/heads/main" && "${{ github.ref_type }}" != "tag" ]]; then
             echo "topicid=${{ vars.MESSAGE_DEVELOPING_MANAGER_THREAD_ID }}" >> $GITHUB_OUTPUT
           fi
-
       - name: Download Release artifact
         uses: actions/download-artifact@v8
         with:
           name: ${{ steps.determine.outputs.title }}-release
           path: ./apk/release
-
       - name: Download Telegram Bot API Binary
         uses: actions/download-artifact@v8
         with:
           name: telegram-bot-api-binary
           path: .
-
       - name: Upload to Telegram
         if: steps.need_upload.outputs.UPLOAD == 'true'
         env:
